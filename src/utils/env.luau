@@ -8,8 +8,8 @@ local ENV_FILE_PATH: string = ".env"
 
 type Environment = { API_KEY: string }
 
-local env = serde.decode("toml", fs.readFile(ENV_FILE_PATH))
-return setmetatable(env :: Environment, {
+local env = fs.isFile(ENV_FILE_PATH) and serde.decode("toml", fs.readFile(ENV_FILE_PATH))
+return setmetatable((env or {}) :: Environment, {
 	__index = process.env,
 	__newindex = process.env,
 })
