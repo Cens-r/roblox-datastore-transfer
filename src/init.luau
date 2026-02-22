@@ -1,6 +1,6 @@
 --!strict
-local process = require("@lune/process")
-local task = require("@lune/task")
+local process = zune.process
+local task = zune.task
 
 local env = require("@self/utils/env")
 assert(env.API_KEY, "Missing `API_KEY` variable in environment!")
@@ -50,6 +50,9 @@ local to_list = datastores.list({
 	universe_id = UNIVERSE_ID.TO,
 }, { pageToken = "*" })
 
+local time = zune.time
+local FILTER_DATE = time.date.fromIsoDate("2026-01-06T00:00:00Z")
+
 for id, from_datastore in from_list do
 	local to_datastore = to_list[id]
 	if not to_datastore then
@@ -68,6 +71,14 @@ for id, from_datastore in from_list do
 		print(`* * * * * | Processing batch of {#keys} keys!`)
 		for _, key in keys do
 			local value = from_datastore:get(key)
+			if (value :: any).revisionCreateTime then
+				local date = time.date.fromIsoDate(value.revisionCreateTime)
+				if date.timestamp < FILTER_DATE.timestamp then
+					continue
+				end
+			end
+			print(value)
+
 			value = datastores.reassign(to_datastore, value) :: datastores.DataStoreValue
 			to_datastore:set(value)
 		end

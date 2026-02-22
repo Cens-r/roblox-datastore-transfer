@@ -1,3 +1,9 @@
 {
-    "luau-lsp.platform.type": "standard"
+  "luau-lsp.platform.type": "standard",
+  "luau-lsp.types.definitionFiles": [
+    "C:\\Users\\Taege\\.zune\\typedefs\\global\\zune.d.luau"
+  ],
+  "luau-lsp.types.documentationFiles": [
+    "C:\\Users\\Taege\\.zune\\typedefs\\global\\zune.d.json"
+  ]
 }

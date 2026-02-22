@@ -1,14 +1,16 @@
 --!strict
 
-local fs = require("@lune/fs")
-local process = require("@lune/process")
-local serde = require("@lune/serde")
+local fs = zune.fs
+local process = zune.process
+local serde = zune.serde
 
 local ENV_FILE_PATH: string = ".env"
 
-type Environment = { API_KEY: string }
+type Environment = { API_KEY: string, [string]: unknown }
 
-local env = fs.isFile(ENV_FILE_PATH) and serde.decode("toml", fs.readFile(ENV_FILE_PATH))
+local exists = fs.stat(ENV_FILE_PATH).kind == "file"
+local env = exists and serde.toml.decode(fs.readFile(ENV_FILE_PATH))
+
 return setmetatable((env or {}) :: Environment, {
 	__index = process.env,
 	__newindex = process.env,

@@ -1,8 +1,8 @@
 --!strict
 
-local net = require("@lune/net")
-local serde = require("@lune/serde")
-local task = require("@lune/task")
+local net = zune.net
+local serde = zune.serde
+local task = zune.task
 
 local MAX_RETRY_COUNT: number = 5
 
@@ -60,24 +60,24 @@ type RequestParams = {
 	query: { [string]: unknown }?,
 }
 
-local function request(params: RequestParams): net.FetchResponse
+local function request(params: RequestParams): HttpResponse<string>
+	local url = `{BASE_URL}/{params.path}{build_query(params.query)}`
 	local body = (params.body or {} :: RequestBody)
-	local config: net.FetchParams = {
+	local config: HttpRequestOptions = {
 		method = params.method,
-		url = `{BASE_URL}/{params.path}{build_query(params.query)}`,
 		headers = {
 			[HEADERS.API_KEY] = params.api_key,
 			[HEADERS.CONTENT_TYPE] = body.type,
 		},
 		body = body.content,
 	}
-	return net.request(config)
+	return net.http.request(url, config)
 end
 
 local request_reset: { [RequestMethod]: number } = {}
 local function api_request<T>(params: RequestParams): T
 	local method = params.method or "GET" :: RequestMethod
-	local response: net.FetchResponse
+	local response: HttpResponse<string>
 
 	-- Handle for rate-limiting and throttling:
 	local retry_count = 0
@@ -88,12 +88,12 @@ local function api_request<T>(params: RequestParams): T
 		end
 		response = request(params)
 		retry_count += 1
-	until response.statusCode ~= 429
+	until response.status_code ~= 429
 
 	-- TODO: Use Content-Type header to determine how to decode body.
-	local content = serde.decode("json", response.body)
+	local content = serde.json.decode(response.body)
 	if not response.ok then
-		error(`[{response.statusCode}]: {response.statusMessage}\nPath = {params.path}\nResponse = {response.body}`)
+		error(`[{response.status_code}]: {response.status_reason}\nPath = {params.path}\nResponse = {response.body}`)
 	end
 
 	local header = response.headers
@@ -179,7 +179,7 @@ function DataStore.set(self: DataStore, value: DataStoreValue): ()
 		method = "PATCH",
 		body = {
 			type = "application/json",
-			content = serde.encode("json", payload),
+			content = serde.json.encode(payload),
 		},
 	}
 	api_request(params)
