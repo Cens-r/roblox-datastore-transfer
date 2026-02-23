@@ -1,10 +1,17 @@
 --!strict
 
+-- Zune libraries:
 local net = zune.net
 local serde = zune.serde
 local task = zune.task
 
+-- Constants:
 local MAX_RETRY_COUNT: number = 5
+local RETRY_BASE_TIME: number = 0.1
+local VERBOSE_OUTPUT: boolean = true
+
+local ERROR_FORMAT: string = "Reason: %s (Code: %d)"
+local ERROR_INFO_SEPARATOR: string = "\n -+- "
 
 local BASE_URL: string = "https://apis.roblox.com/cloud/v2"
 local HEADERS = {
@@ -23,23 +30,8 @@ local function hide_context(ctx: Context): Context
 	return setmetatable(ctx, metatable)
 end
 
-local EXPANSION_TOKEN = "*" :: "*"
-local function handle_expansion<T>(generator: (string?) -> string?, token: string?): string?
-	if token ~= EXPANSION_TOKEN then
-		return generator(token)
-	end
-
-	token = nil
-	repeat
-		token = generator(token)
-	until not token
-	return nil
-end
-
 local function build_query(params: { [string]: unknown }?): string
-	if not params then
-		return ""
-	end
+	if not params then return "" end
 	local queries: { string } = {}
 	for key, value in params do
 		table.insert(queries, `{key}={value}`)
@@ -58,48 +50,71 @@ type RequestParams = {
 	method: RequestMethod?,
 	body: RequestBody?,
 	query: { [string]: unknown }?,
+	skip_retry: boolean?,
 }
 
-local function request(params: RequestParams): HttpResponse<string>
-	local url = `{BASE_URL}/{params.path}{build_query(params.query)}`
+local function parse_errors(response: HttpResponse<string>, content: { [string]: unknown }): string
+	local message: string = ""
+	if content.errors then
+		local error_list: { string } = {}
+		for index, info in content.errors do
+			error_list[index] = string.format(ERROR_FORMAT :: any, content.message, content.code)
+		end
+		message = table.concat(error_list, ERROR_INFO_SEPARATOR)
+	elseif content.code and content.message then
+		message = string.format(ERROR_FORMAT :: any, content.message, content.code)
+	else
+		message = string.format(ERROR_FORMAT :: any, response.status_reason, response.status_code)
+	end
+	return message
+end
+
+local reset_times: { [RequestMethod]: number? } = {}
+local function api_request<T>(params: RequestParams): (boolean, T)
+	local method: RequestMethod = params.method or "GET"
 	local body = (params.body or {} :: RequestBody)
+
+	local url = `{BASE_URL}/{params.path}{build_query(params.query)}`
 	local config: HttpRequestOptions = {
-		method = params.method,
+		method = method,
 		headers = {
 			[HEADERS.API_KEY] = params.api_key,
 			[HEADERS.CONTENT_TYPE] = body.type,
 		},
 		body = body.content,
 	}
-	return net.http.request(url, config)
-end
 
-local request_reset: { [RequestMethod]: number } = {}
-local function api_request<T>(params: RequestParams): T
-	local method = params.method or "GET" :: RequestMethod
 	local response: HttpResponse<string>
 
-	-- Handle for rate-limiting and throttling:
-	local retry_count = 0
+	local retry_count, await_reset = 0, false
 	repeat
-		if response then --> Only wait on future loops.
-			assert(retry_count <= MAX_RETRY_COUNT, `Request exceded the retry limit: {MAX_RETRY_COUNT}`)
-			task.wait(request_reset[method] or (0.5 * 2 ^ retry_count))
+		if response then
+			if await_reset and reset_times[method] then
+				task.wait(reset_times[method])
+			else
+				task.wait(math.min(RETRY_BASE_TIME * 2 ^ retry_count, 60))
+			end
 		end
-		response = request(params)
+		response = net.http.request(url, config)
+		await_reset = response.status_code == 429
 		retry_count += 1
-	until response.status_code ~= 429
+	until response.ok or params.skip_retry or (retry_count > MAX_RETRY_COUNT)
 
-	-- TODO: Use Content-Type header to determine how to decode body.
+	local headers = response.headers
+	local reset_time: string? = headers[HEADERS.RATE_LIMIT_RESET]
+	if reset_time then reset_times[method] = tonumber(reset_time) or reset_times[method] end
+
 	local content = serde.json.decode(response.body)
-	if not response.ok then
-		error(`[{response.status_code}]: {response.status_reason}\nPath = {params.path}\nResponse = {response.body}`)
+	if (not response.ok) and VERBOSE_OUTPUT then
+		local error_segments = {
+			`Request to Data Store API failed!`,
+			parse_errors(response, content),
+			`Path: {params.path}`,
+			if not params.skip_retry then `Retries: {retry_count}` else nil,
+		}
+		print("[ERROR]: " .. table.concat(error_segments, ERROR_INFO_SEPARATOR))
 	end
-
-	local header = response.headers
-	request_reset[method] = tonumber(header[HEADERS.RATE_LIMIT_RESET]) or request_reset[method]
-
-	return content
+	return response.ok, content :: T
 end
 
 local DataStore = {}
@@ -128,42 +143,40 @@ local function construct(ctx: Context, info: DataStoreInfo): DataStore
 	return table.freeze(datastore :: any)
 end
 
-function DataStore.keys(
-	self: DataStore,
-	query: {
-		pageToken: typeof(EXPANSION_TOKEN) | string?,
-		showDeleted: boolean?,
-	}?
-): ({ DataStoreKey }, string?)
-	local internal_query = if query then table.clone(query) else {} :: { [string]: any }
+type ListQuery = {
+	pageToken: string?,
+	showDeleted: boolean?,
+	maxPageSize: number?,
+	filter: string?,
+}
 
+function DataStore.keys(self: DataStore, query: ListQuery?): ({ DataStoreKey }, string?)
 	local out = {}
-	local next_token = handle_expansion(function(token)
-		internal_query.pageToken = token
-		local params: RequestParams = {
-			api_key = self.__context.api_key,
-			path = `{self.path}/entries`,
-			query = internal_query :: any,
-		}
-		local content = api_request(params) :: {
-			dataStoreEntries: { DataStoreKey },
-			nextPageToken: string?,
-		}
-		local entries = content.dataStoreEntries
-		if entries then
-			table.move(entries, 1, #entries, #out + 1, out)
-		end
-		return content.nextPageToken
-	end, internal_query.pageToken)
-	return out, next_token
+	local params: RequestParams = {
+		api_key = self.__context.api_key,
+		path = `{self.path}/entries`,
+		query = query :: any,
+	}
+
+	local success, result = api_request(params)
+	result = result :: {
+		dataStoreEntries: { DataStoreKey },
+		nextPageToken: string?,
+	}
+	if not success then return out, nil end
+
+	local entries = result.dataStoreEntries
+	if entries then table.move(entries, 1, #entries, #out + 1, out) end
+	return out, result.nextPageToken
 end
 
-function DataStore.get(self: DataStore, key: DataStoreKey): DataStoreValue
+function DataStore.get(self: DataStore, key: DataStoreKey): DataStoreValue?
 	local params: RequestParams = {
 		api_key = self.__context.api_key,
 		path = key.path,
 	}
-	return api_request(params) :: DataStoreValue
+	local success, result = api_request(params)
+	return if success then result :: DataStoreValue else nil
 end
 
 function DataStore.set(self: DataStore, value: DataStoreValue): ()
@@ -185,37 +198,46 @@ function DataStore.set(self: DataStore, value: DataStoreValue): ()
 	api_request(params)
 end
 
-local function list(
-	ctx: Context,
-	query: {
-		pageToken: typeof(EXPANSION_TOKEN) | string?,
-	}?
-): ({ [string]: DataStore }, string?)
-	local internal_query = if query then table.clone(query) else {} :: { [string]: any }
-
+local function list(ctx: Context, query: ListQuery?): ({ DataStore }, string?)
 	local out = {}
-	local next_token = handle_expansion(function(token)
-		internal_query.pageToken = token
-		local params: RequestParams = {
-			api_key = ctx.api_key,
-			path = `universes/{ctx.universe_id}/data-stores`,
-			query = internal_query,
-		}
-		local content = api_request(params) :: { dataStores: { DataStoreInfo }, nextPageToken: string? }
-		for _, info in content.dataStores or {} do
-			out[info.id] = construct(ctx, info)
-		end
-		return content.nextPageToken
-	end, internal_query.pageToken)
-	return out, next_token
+	local params: RequestParams = {
+		api_key = ctx.api_key,
+		path = `universes/{ctx.universe_id}/data-stores`,
+		query = query :: any,
+	}
+
+	local _, result = api_request(params)
+	result = result :: {
+		dataStores: { DataStoreInfo },
+		nextPageToken: string?,
+	}
+
+	for index, info in result.dataStores or {} do
+		out[index] = construct(ctx, info)
+	end
+	return out, result.nextPageToken
 end
 
-local function get(ctx: Context, id: string): DataStore
-	return construct(ctx, {
+local function get(ctx: Context, id: string, validate: boolean?): DataStore?
+	local state: DataStoreState = "STATE_UNSPECIFIED"
+	local info: DataStoreInfo = {
 		id = id,
 		path = `universes/{ctx.universe_id}/data-stores/{id}`,
-		state = "STATE_UNSPECIFIED",
-	})
+		state = state,
+	}
+	if validate == nil or validate then
+		-- Validation via attempted key list operation:
+		local params: RequestParams = {
+			api_key = ctx.api_key,
+			path = `{info.path}/entries`,
+			query = { maxPageSize = 1 }, --> Limit to a single read operation.
+			skip_retry = true,
+		}
+		local success = api_request(params)
+		if not success then return nil end
+	end
+
+	return construct(ctx, info)
 end
 
 local function build_key(datastore: DataStore, id: string, scope: string?): DataStoreKey

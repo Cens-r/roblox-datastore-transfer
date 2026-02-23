@@ -1,12 +1,19 @@
 --!strict
-local process = zune.process
-local task = zune.task
 
-local env = require("@self/utils/env")
-assert(env.API_KEY, "Missing `API_KEY` variable in environment!")
+-- Zune libraries:
+local time = zune.time
+local sqlite = zune.sqlite
+local process = zune.process
+
+local VALIDATE_DATASTORES: boolean = true
+local MAX_PAGE_SIZE: number = 256
+
+local ENVIRONMENT = process.env :: { API_KEY: string?, [string]: string }
+assert(ENVIRONMENT.API_KEY, "Missing `API_KEY` variable in environment!")
 
 local UNIVERSE_ID: { FROM: number?, TO: number? } = {}
 
+-- Set constructor helper method:
 local function set<T>(array: { T }): { [T]: true }
 	local out = {}
 	for _, value in array do
@@ -21,9 +28,7 @@ do -- Handle universe id arguments:
 	while index <= #args do
 		for key, alias in FLAG_ALIASES :: any do
 			local flag = args[index]
-			if not alias[flag] then
-				continue
-			end
+			if not alias[flag] then continue end
 
 			index += 1
 			(UNIVERSE_ID :: any)[key] = args[index]
@@ -38,51 +43,54 @@ assert(UNIVERSE_ID.TO and typeof(UNIVERSE_ID.TO), "Missing require `--to <UNIVER
 
 local datastores = require("@self/datastores")
 
--- Transfer-from Universe's DataStores:
-local from_list = datastores.list({
-	api_key = env.API_KEY,
-	universe_id = UNIVERSE_ID.FROM,
-}, { pageToken = "*" })
-
--- Transfer-to Universe's DataStores:
-local to_list = datastores.list({
-	api_key = env.API_KEY,
-	universe_id = UNIVERSE_ID.TO,
-}, { pageToken = "*" })
-
-local time = zune.time
-local FILTER_DATE = time.date.fromIsoDate("2026-01-06T00:00:00Z")
-
-for id, from_datastore in from_list do
-	local to_datastore = to_list[id]
-	if not to_datastore then
-		print(`[SKIPPING]: Couldn't find '{id}' DataStore in the Universe ({UNIVERSE_ID.TO}) you're transfering to!`)
-		continue
-	end
-
-	print(`[TRANSFER]: Starting for '{id}' DataStore:`)
-	local keys: { datastores.DataStoreKey }, token: string?
+local function drain<T>(method: (T?) -> T?, key: T?): ()
 	repeat
-		keys, token = from_datastore:keys({ showDeleted = false })
-		if #keys == 0 then
-			break --> No more keys to process!
-		end
-
-		print(`* * * * * | Processing batch of {#keys} keys!`)
-		for _, key in keys do
-			local value = from_datastore:get(key)
-			if (value :: any).revisionCreateTime then
-				local date = time.date.fromIsoDate(value.revisionCreateTime)
-				if date.timestamp < FILTER_DATE.timestamp then
-					continue
-				end
-			end
-			print(value)
-
-			value = datastores.reassign(to_datastore, value) :: datastores.DataStoreValue
-			to_datastore:set(value)
-		end
-	until not token
-	print("-")
+		key = method(key)
+	until key == nil
 end
+
+local TO_CTX: datastores.Context = {
+	api_key = ENVIRONMENT.API_KEY,
+	universe_id = UNIVERSE_ID.TO,
+}
+local FROM_CTX: datastores.Context = {
+	api_key = ENVIRONMENT.API_KEY,
+	universe_id = UNIVERSE_ID.FROM,
+}
+
+drain(function(ds_token: string?)
+	local page: { datastores.DataStore }
+	page, ds_token = datastores.list(FROM_CTX, { pageToken = ds_token, maxPageSize = MAX_PAGE_SIZE })
+
+	for _, from_datastore in page do
+		local identifier = from_datastore.id
+
+		local to_datastore = datastores.get(TO_CTX, identifier, VALIDATE_DATASTORES)
+		if not to_datastore then
+			print(
+				`[SKIPPING]: Couldn't find '{identifier}' DataStore in the Universe ({UNIVERSE_ID.TO}) you're transfering to!`
+			)
+			continue
+		end
+
+		print(`[TRANSFER]: Starting for '{identifier}' DataStore:`)
+		drain(function(key_token: string?)
+			local keys: { datastores.DataStoreKey }
+			keys, key_token = from_datastore:keys({ showDeleted = false, maxPageSize = MAX_PAGE_SIZE })
+			if #keys == 0 then return key_token end
+
+			print(`* * * * * | Processing batch of {#keys} keys!`)
+			for _, key in keys do
+				local value = from_datastore:get(key)
+				if value == nil then continue end
+				value = datastores.reassign(to_datastore, value) :: datastores.DataStoreValue
+				to_datastore:set(value)
+			end
+
+			return key_token
+		end)
+		print("-")
+	end
+	return ds_token
+end)
 print("[COMPLETE]: Finished transfering process!")
