@@ -7,7 +7,7 @@ local task = zune.task
 
 -- Constants:
 local MAX_RETRY_COUNT: number = 5
-local RETRY_BASE_TIME: number = 0.1
+local RETRY_BASE_TIME: number = 0.5
 local VERBOSE_OUTPUT: boolean = true
 
 local ERROR_FORMAT: string = "Reason: %s (Code: %d)"
@@ -30,10 +30,19 @@ local function hide_context(ctx: Context): Context
 	return setmetatable(ctx, metatable)
 end
 
+-- Pulled from: https://github.com/Scythe-Technology/zune-adapters/blob/master/impl/lune/runtime/net.luau
+function url_encode(s: string, binary: boolean?): string
+	local result = s:gsub("([^%w%.%-_])", function(c: string)
+		return string.format("%%%02X", string.byte(c))
+	end)
+	return result
+end
+
 local function build_query(params: { [string]: unknown }?): string
 	if not params then return "" end
 	local queries: { string } = {}
 	for key, value in params do
+		value = url_encode(tostring(value))
 		table.insert(queries, `{key}={value}`)
 	end
 	return if #queries > 0 then "?" .. table.concat(queries, "&") else ""
@@ -73,8 +82,9 @@ local reset_times: { [RequestMethod]: number? } = {}
 local function api_request<T>(params: RequestParams): (boolean, T)
 	local method: RequestMethod = params.method or "GET"
 	local body = (params.body or {} :: RequestBody)
+	local query = build_query(params.query)
 
-	local url = `{BASE_URL}/{params.path}{build_query(params.query)}`
+	local url = `{BASE_URL}/{params.path}{query}`
 	local config: HttpRequestOptions = {
 		method = method,
 		headers = {
@@ -86,19 +96,26 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 
 	local response: HttpResponse<string>
 
-	local retry_count, await_reset = 0, false
+	local attempt_count = 0
+	local skip_retry, await_reset = params.skip_retry, false
+
 	repeat
 		if response then
 			if await_reset and reset_times[method] then
 				task.wait(reset_times[method])
 			else
-				task.wait(math.min(RETRY_BASE_TIME * 2 ^ retry_count, 60))
+				task.wait(math.min(RETRY_BASE_TIME * 2 ^ attempt_count, 60))
 			end
 		end
 		response = net.http.request(url, config)
-		await_reset = response.status_code == 429
-		retry_count += 1
-	until response.ok or params.skip_retry or (retry_count > MAX_RETRY_COUNT)
+
+		if response.status_code == 400 then
+			skip_retry = true --> Skip on bad requests.
+		else
+			await_reset = response.status_code == 429
+		end
+		attempt_count += 1
+	until response.ok or skip_retry or (attempt_count > MAX_RETRY_COUNT)
 
 	local headers = response.headers
 	local reset_time: string? = headers[HEADERS.RATE_LIMIT_RESET]
@@ -110,7 +127,8 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 			`Request to Data Store API failed!`,
 			parse_errors(response, content),
 			`Path: {params.path}`,
-			if not params.skip_retry then `Retries: {retry_count}` else nil,
+			`Query: {query}`,
+			if not params.skip_retry then `Retries: {attempt_count - 1}` else nil,
 		}
 		print("[ERROR]: " .. table.concat(error_segments, ERROR_INFO_SEPARATOR))
 	end
