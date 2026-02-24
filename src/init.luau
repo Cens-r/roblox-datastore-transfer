@@ -5,6 +5,7 @@ local sqlite = zune.sqlite
 local process = zune.process
 local fs = zune.fs
 local luau = zune.luau
+local io = zune.io
 
 local OUTPUT_PATH: string = "./output"
 
@@ -137,7 +138,7 @@ local function transfer(from_datastore: datastores.DataStore)
 
 		local keys_transferred: { string } = {}
 
-		print(`* * * * * | Processing batch of {#keys} keys...`)
+		io.stdout:write(`* * * * * | Processing batch of {#keys} keys...`)
 		for _, key in keys do
 			local result = key_find:all({ ["$key"] = key.id })
 			if #result > 0 then continue end
@@ -162,10 +163,11 @@ local function transfer(from_datastore: datastores.DataStore)
 			end, "immediate")()
 			transfer_count += #keys_transferred
 		end
+		io.stdout:write(` Transferred: {#keys_transferred}\n`)
 
 		return key_token
 	end)
-	print(`\b[COMPLETE]: Transferred {transfer_count} keys for '{identifier}' DataStore!`)
+	print(`\b[COMPLETE]: Transferred a total of {transfer_count} keys for '{identifier}' DataStore!`)
 end
 
 local function transfer_multiple(list: { datastores.DataStore })
