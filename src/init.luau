@@ -88,7 +88,7 @@ do -- Ensure output path exists:
 	end
 end
 
-local db = sqlite.open("./output/transfers.db")
+local db = sqlite.open(`./output/transfer_{context.from.universe_id}_{context.to.universe_id}.db`)
 db:exec([[
 	PRAGMA journal_mode = WAL;      --> Simultaneous read and writes.
 	PRAGMA synchronous = NORMAL;    --> Reduce number of write confirmations.
