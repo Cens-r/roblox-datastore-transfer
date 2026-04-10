@@ -107,13 +107,18 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 				task.wait(math.min(RETRY_BASE_TIME * 2 ^ attempt_count, 60))
 			end
 		end
-		response = net.http.request(url, config)
+    local success: boolean
+		succcess, response = pcall(net.http.request, url, config)
 
-		if response.status_code == 400 then
-			skip_retry = true --> Skip on bad requests.
-		else
-			await_reset = response.status_code == 429
-		end
+    if success then
+		  if response.status_code == 400 then
+			  skip_retry = true --> Skip on bad requests.
+		  else
+			  await_reset = response.status_code == 429
+		  end
+    else
+      print("[ERROR]:", response)
+    end
 		attempt_count += 1
 	until response.ok or skip_retry or (attempt_count > MAX_RETRY_COUNT)
 
