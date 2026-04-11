@@ -108,7 +108,7 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 			end
 		end
     local success: boolean
-		succcess, response = pcall(net.http.request, url, config)
+		success, response = pcall(net.http.request, url, config)
 
     if success then
 		  if response.status_code == 400 then
@@ -118,6 +118,7 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 		  end
     else
       print("[ERROR]:", response)
+      print("Retrying...")
     end
 		attempt_count += 1
 	until response.ok or skip_retry or (attempt_count > MAX_RETRY_COUNT)
