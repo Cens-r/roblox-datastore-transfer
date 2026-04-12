@@ -133,7 +133,9 @@ local function api_request<T>(params: RequestParams): (boolean, T?)
   if typeof(response) == "string" then
     return false, nil 
   end
-  if not string.find(response[HEADERS.CONTENT_TYPE] or "", "application/json") then
+
+	local headers = response.headers
+  if not string.find(string.lower(headers[HEADERS.CONTENT_TYPE] or ""), "application/json", 1, true) then
     if VERBOSE_OUTPUT then
       local error_segments = {
         "Roblox API failed to produce a JSON response.",
@@ -145,7 +147,6 @@ local function api_request<T>(params: RequestParams): (boolean, T?)
     return false, nil
   end
 
-	local headers = response.headers
 	local reset_time: string? = headers[HEADERS.RATE_LIMIT_RESET]
 	if reset_time then reset_times[method] = tonumber(reset_time) or reset_times[method] end
 
