@@ -25,9 +25,9 @@ export type Context = {
 	universe_id: number,
 }
 local function hide_context(ctx: Context): Context
-	local metatable = getmetatable(ctx) or {} :: any
+	local metatable = getmetatable(ctx :: any) or {} :: any
 	metatable.__tostring = `[ Universe ID = {ctx.universe_id} ]`
-	return setmetatable(ctx, metatable)
+	return setmetatable(ctx, metatable) :: any
 end
 
 -- Pulled from: https://github.com/Scythe-Technology/zune-adapters/blob/master/impl/lune/runtime/net.luau
@@ -66,8 +66,8 @@ local function parse_errors(response: HttpResponse<string>, content: { [string]:
 	local message: string = ""
 	if content.errors then
 		local error_list: { string } = {}
-		for index, info in content.errors do
-			error_list[index] = string.format(ERROR_FORMAT :: any, content.message, content.code)
+		for index, info in content.errors :: {[number]: { message: string, code: number }} do
+			error_list[index] = string.format(ERROR_FORMAT :: any, info.message, info.code)
 		end
 		message = table.concat(error_list, ERROR_INFO_SEPARATOR)
 	elseif content.code and content.message then
@@ -79,7 +79,7 @@ local function parse_errors(response: HttpResponse<string>, content: { [string]:
 end
 
 local reset_times: { [RequestMethod]: number? } = {}
-local function api_request<T>(params: RequestParams): (boolean, T)
+local function api_request<T>(params: RequestParams): (boolean, T?)
 	local method: RequestMethod = params.method or "GET"
 	local body = (params.body or {} :: RequestBody)
 	local query = build_query(params.query)
@@ -94,7 +94,7 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 		body = body.content,
 	}
 
-	local response: HttpResponse<string>
+	local response: HttpResponse<string> | string
 
 	local attempt_count = 0
 	local skip_retry, await_reset = params.skip_retry, false
@@ -108,9 +108,9 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 			end
 		end
     local success: boolean
-		success, response = pcall(net.http.request, url, config)
+		success, response = (pcall:: any)(net.http.request, url, config)
 
-    if success then
+    if success and typeof(response) == "table" then
 		  if response.status_code == 400 then
 			  skip_retry = true --> Skip on bad requests.
 		  else
@@ -121,7 +121,13 @@ local function api_request<T>(params: RequestParams): (boolean, T)
       print("Retrying...")
     end
 		attempt_count += 1
-	until response.ok or skip_retry or (attempt_count > MAX_RETRY_COUNT)
+	until (typeof(response) == "table" and response.ok)
+    or skip_retry
+    or (attempt_count > MAX_RETRY_COUNT)
+
+  if typeof(response) == "string" then
+    return false, nil 
+  end
 
 	local headers = response.headers
 	local reset_time: string? = headers[HEADERS.RATE_LIMIT_RESET]
@@ -134,7 +140,7 @@ local function api_request<T>(params: RequestParams): (boolean, T)
 			parse_errors(response, content),
 			`Path: {params.path}`,
 			`Query: {query}`,
-			if not params.skip_retry then `Retries: {attempt_count - 1}` else nil,
+			if not params.skip_retry then `Retries: {attempt_count - 1}` else nil :: any,
 		}
 		print("[ERROR]: " .. table.concat(error_segments, ERROR_INFO_SEPARATOR))
 	end
@@ -187,7 +193,7 @@ function DataStore.keys(self: DataStore, query: ListQuery?): ({ DataStoreKey }, 
 		dataStoreEntries: { DataStoreKey },
 		nextPageToken: string?,
 	}
-	if not success then return out, nil end
+	if not (success and result) then return out, nil end
 
 	local entries = result.dataStoreEntries
 	if entries then table.move(entries, 1, #entries, #out + 1, out) end
@@ -235,8 +241,9 @@ local function list(ctx: Context, query: ListQuery?): ({ DataStore }, string?)
 		dataStores: { DataStoreInfo },
 		nextPageToken: string?,
 	}
+  if not result then return {}, nil end
 
-	for index, info in result.dataStores or {} do
+	for index, info in result.dataStores or {} :: any do
 		out[index] = construct(ctx, info)
 	end
 	return out, result.nextPageToken
@@ -292,7 +299,7 @@ local function reassign_ownership(datastore: DataStore, object: DataStoreInfo): 
 	assert(index, "Failed to parse path of object during ownership reassignment!")
 
 	local new_object = table.clone(object)
-	new_object.path = datastore.path .. string.sub(object.path, index, -1)
+	new_object.path = (datastore.path :: string) .. string.sub(object.path, index, -1)
 
 	return new_object
 end
