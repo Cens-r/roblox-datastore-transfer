@@ -133,6 +133,17 @@ local function api_request<T>(params: RequestParams): (boolean, T?)
   if typeof(response) == "string" then
     return false, nil 
   end
+  if not string.find(response[HEADERS.CONTENT_TYPE] or "", "application/json") then
+    if VERBOSE_OUTPUT then
+      local error_segments = {
+        "Roblox API failed to produce a JSON response.",
+        `Path: {params.path}`,
+        `Query: {query}`
+      }
+      print("[ERROR]: " .. table.concat(error_segments, ERROR_INFO_SEPARATOR))
+    end
+    return false, nil
+  end
 
 	local headers = response.headers
 	local reset_time: string? = headers[HEADERS.RATE_LIMIT_RESET]
@@ -258,7 +269,7 @@ local function get(ctx: Context, id: string, validate: boolean?): DataStore?
 	local state: DataStoreState = "STATE_UNSPECIFIED"
 	local info: DataStoreInfo = {
 		id = id,
-		path = `universes/{ctx.universe_id}/data-stores/{id}`,
+		path = `universes/{ctx.universe_id}/data-stores/{url_encode(id)}`,
 		state = state,
 	}
 	if validate == nil or validate then
@@ -277,10 +288,10 @@ local function get(ctx: Context, id: string, validate: boolean?): DataStore?
 end
 
 local function build_key(datastore: DataStore, id: string, scope: string?): DataStoreKey
-	scope = scope or "global"
+  scope = scope or "global"
 	return {
 		id = `{scope}/{id}`,
-		path = `{datastore.path}/scopes/{scope}/entries/{id}`,
+		path = `{datastore.path}/scopes/{url_encode(scope)}/entries/{url_encode(id)}`,
 		state = "STATE_UNSPECIFIED",
 	}
 end
