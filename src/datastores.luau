@@ -116,9 +116,14 @@ local function api_request<T>(params: RequestParams): (boolean, T?)
 		  else
 			  await_reset = response.status_code == 429
 		  end
-    else
-      print("[ERROR]:", response)
-      print("Retrying...")
+    elseif VERBOSE_OUTPUT then
+      local error_segments = {
+        `Issue: {response}`,
+        `Path: {params.path}`,
+        `Query: {query}`,
+        if (attempt_count + 1) <= MAX_RETRY_COUNT then "Retrying request..." else "Couldn't complete request!"
+      }
+      print("[ERROR]: " .. table.concat(error_segments, ERROR_INFO_SEPARATOR))
     end
 		attempt_count += 1
 	until (typeof(response) == "table" and response.ok)
